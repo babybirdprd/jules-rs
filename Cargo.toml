@@ -2,7 +2,20 @@
 name = "jules-rs"
 version = "0.1.0"
 edition = "2024"
-description = "Production-grade client for the Jules API"
+rust-version = "1.85"
+description = "Production-grade Rust client for the Jules API"
+license = "MIT"
+repository = "https://github.com/babybirdprd/jules-rs"
+homepage = "https://github.com/babybirdprd/jules-rs"
+documentation = "https://docs.rs/jules-rs"
+readme = "README.md"
+keywords = ["jules", "api", "google", "agent", "async"]
+categories = ["api-bindings", "asynchronous"]
+exclude = ["REF.json", ".github/*"]
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -13,3 +26,8 @@ chrono = { version = "0.4", features = ["serde"] }
 futures-util = "0.3"
 url = "2.4"
 base64 = "0.21"
+tokio = { version = "1", features = ["rt"], optional = true }
+
+[features]
+default = []
+tokio-runtime = ["tokio"]

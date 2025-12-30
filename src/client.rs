@@ -1,3 +1,8 @@
+//! HTTP client for the Jules API.
+//!
+//! This module provides the main [`JulesClient`] struct for interacting with
+//! the Jules API endpoints.
+
 use crate::error::{JulesError, Result};
 use crate::models::*;
 use futures_util::{StreamExt, stream::Stream};
@@ -6,6 +11,25 @@ use serde::Deserialize;
 use std::pin::Pin;
 use url::Url;
 
+/// The main client for interacting with the Jules API.
+///
+/// `JulesClient` provides methods for all Jules API operations including
+/// managing sessions, activities, and sources.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use jules_rs::JulesClient;
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// let client = JulesClient::new("YOUR_OAUTH_TOKEN")?;
+///
+/// // List sessions
+/// let response = client.list_sessions(Some(10), None).await?;
+/// println!("Found {} sessions", response.sessions.len());
+/// # Ok(())
+/// # }
+/// ```
 pub struct JulesClient {
     http: Client,
     base_url: Url,
@@ -13,6 +37,24 @@ pub struct JulesClient {
 }
 
 impl JulesClient {
+    /// Creates a new Jules API client.
+    ///
+    /// # Arguments
+    ///
+    /// * `api_key` - An API key from [jules.google.com/settings](https://jules.google.com/settings).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the base URL cannot be parsed (should not happen
+    /// under normal circumstances).
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use jules_rs::JulesClient;
+    ///
+    /// let client = JulesClient::new("YOUR_API_KEY").unwrap();
+    /// ```
     pub fn new(token: impl Into<String>) -> Result<Self> {
         Ok(Self {
             http: Client::new(),
@@ -25,7 +67,7 @@ impl JulesClient {
         let url = self.base_url.join(path).expect("Path joining failed");
         self.http
             .request(method, url)
-            .bearer_auth(&self.token)
+            .header("X-Goog-Api-Key", &self.token)
             .header("Accept", "application/json")
     }
 
@@ -44,20 +86,74 @@ impl JulesClient {
 
     // --- Sessions API ---
 
+    /// Creates a new coding session.
+    ///
+    /// # Arguments
+    ///
+    /// * `session` - The session configuration including prompt and source context.
+    ///
+    /// # Returns
+    ///
+    /// The created session with server-generated fields populated (name, id, etc.).
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use jules_rs::{JulesClient, Session, SourceContext, GitHubRepoContext};
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = JulesClient::new("TOKEN")?;
+    /// let session = Session {
+    ///     prompt: "Fix the bug".to_string(),
+    ///     source_context: SourceContext {
+    ///         source: "sources/repo-id".to_string(),
+    ///         github_repo_context: Some(GitHubRepoContext {
+    ///             starting_branch: "main".to_string(),
+    ///         }),
+    ///     },
+    ///     // ... other fields set to None/default
+    /// #   name: None, id: None, title: None, require_plan_approval: None,
+    /// #   automation_mode: None, create_time: None, update_time: None,
+    /// #   state: None, url: None, outputs: None,
+    /// };
+    /// let created = client.create_session(&session).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn create_session(&self, session: &Session) -> Result<Session> {
         let rb = self.request(Method::POST, "sessions").json(session);
         self.execute(rb).await
     }
 
+    /// Gets a session by its resource name.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The full resource name (e.g., `sessions/abc123`).
     pub async fn get_session(&self, name: &str) -> Result<Session> {
         self.execute(self.request(Method::GET, name)).await
     }
 
+    /// Deletes a session.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The full resource name of the session to delete.
     pub async fn delete_session(&self, name: &str) -> Result<()> {
         let _: Empty = self.execute(self.request(Method::DELETE, name)).await?;
         Ok(())
     }
 
+    /// Lists sessions with pagination.
+    ///
+    /// # Arguments
+    ///
+    /// * `page_size` - Maximum number of sessions to return (1-100, default 30).
+    /// * `page_token` - Token from a previous response for pagination.
+    ///
+    /// # Returns
+    ///
+    /// A response containing sessions and optionally a token for the next page.
     pub async fn list_sessions(
         &self,
         page_size: Option<i32>,
@@ -73,6 +169,28 @@ impl JulesClient {
         self.execute(rb).await
     }
 
+    /// Returns an async stream over all sessions.
+    ///
+    /// This method automatically handles pagination, yielding sessions one at
+    /// a time until all sessions have been retrieved.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use jules_rs::JulesClient;
+    /// use futures_util::StreamExt;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let client = JulesClient::new("TOKEN")?;
+    /// let mut stream = client.stream_sessions();
+    ///
+    /// while let Some(result) = stream.next().await {
+    ///     let session = result?;
+    ///     println!("Session: {:?}", session.title);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn stream_sessions(&self) -> Pin<Box<dyn Stream<Item = Result<Session>> + '_>> {
         Box::pin(
             futures_util::stream::unfold(Some("".to_string()), move |state| async move {
@@ -105,6 +223,15 @@ impl JulesClient {
         )
     }
 
+    /// Sends a message to an active session.
+    ///
+    /// Use this to provide additional context or respond to the agent's
+    /// questions during a session.
+    ///
+    /// # Arguments
+    ///
+    /// * `session_name` - The full resource name of the session.
+    /// * `prompt` - The message to send.
     pub async fn send_message(&self, session_name: &str, prompt: &str) -> Result<()> {
         let path = format!("{}:sendMessage", session_name);
         let body = SendMessageRequest {
@@ -116,6 +243,14 @@ impl JulesClient {
         Ok(())
     }
 
+    /// Approves the current plan for a session.
+    ///
+    /// When a session is in the `AWAITING_PLAN_APPROVAL` state, call this
+    /// method to approve the plan and allow the agent to proceed.
+    ///
+    /// # Arguments
+    ///
+    /// * `session_name` - The full resource name of the session.
     pub async fn approve_plan(&self, session_name: &str) -> Result<()> {
         let path = format!("{}:approvePlan", session_name);
         let body = ApprovePlanRequest {};
@@ -127,10 +262,22 @@ impl JulesClient {
 
     // --- Activities API ---
 
+    /// Gets an activity by its resource name.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The full resource name (e.g., `sessions/123/activities/456`).
     pub async fn get_activity(&self, name: &str) -> Result<Activity> {
         self.execute(self.request(Method::GET, name)).await
     }
 
+    /// Lists activities for a session with pagination.
+    ///
+    /// # Arguments
+    ///
+    /// * `session_name` - The full resource name of the session.
+    /// * `page_size` - Maximum number of activities to return.
+    /// * `page_token` - Token from a previous response for pagination.
     pub async fn list_activities(
         &self,
         session_name: &str,
@@ -150,10 +297,22 @@ impl JulesClient {
 
     // --- Sources API ---
 
+    /// Gets a source by its resource name.
+    ///
+    /// # Arguments
+    ///
+    /// * `name` - The full resource name (e.g., `sources/abc123`).
     pub async fn get_source(&self, name: &str) -> Result<Source> {
         self.execute(self.request(Method::GET, name)).await
     }
 
+    /// Lists available sources (connected repositories) with pagination.
+    ///
+    /// # Arguments
+    ///
+    /// * `filter` - Optional filter expression.
+    /// * `page_size` - Maximum number of sources to return.
+    /// * `page_token` - Token from a previous response for pagination.
     pub async fn list_sources(
         &self,
         filter: Option<String>,
